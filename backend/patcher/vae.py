@@ -131,7 +131,22 @@ class VAE:
 
         try:
             memory_used = self.memory_used_decode(samples_in.shape, self.vae_dtype)
-            memory_management.load_models_gpu([self.patcher], memory_required=memory_used)
+
+            memory_management.soft_empty_cache()
+            free_memory = memory_management.get_free_memory(self.device)
+
+            if memory_used > free_memory:
+                print(
+                    f"Full VAE decode requires {memory_used / (1024**3):.2f} GiB, "
+                    f"but only {free_memory / (1024**3):.2f} GiB is free; "
+                    "using tiled VAE."
+                )
+                return self.decode_tiled(samples_in).to(self.output_device)
+
+            memory_management.load_models_gpu(
+                [self.patcher],
+                memory_required=memory_used
+)
             free_memory = memory_management.get_free_memory(self.device)
             batch_number = int(free_memory / memory_used)
             batch_number = max(1, batch_number)

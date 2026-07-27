@@ -2,7 +2,6 @@ import math
 
 import modules.scripts as scripts
 import gradio as gr
-from PIL import Image
 
 from modules import processing, shared, images, devices
 from modules.processing import Processed
@@ -32,8 +31,8 @@ class Script(scripts.Script):
 
         p.extra_generation_params["SD upscale overlap"] = overlap
         p.extra_generation_params["SD upscale upscaler"] = upscaler.name
+        p.extra_generation_params["SD upscale scale factor"] = scale_factor
 
-        initial_info = None
         seed = p.seed
 
         init_img = p.init_images[0]
@@ -47,6 +46,12 @@ class Script(scripts.Script):
         devices.torch_gc()
 
         grid = images.split_grid(img, tile_w=p.width, tile_h=p.height, overlap=overlap)
+        p.extra_generation_params["SD upscale final size"] = f"{grid.image_w}x{grid.image_h}"
+
+        # split_grid() creates independent Pillow images. Neither complete source
+        # image is needed after the tiles have been created.
+        del img
+        del init_img
 
         batch_size = p.batch_size
         upscale_count = p.n_iter
@@ -54,48 +59,90 @@ class Script(scripts.Script):
         p.do_not_save_grid = True
         p.do_not_save_samples = True
 
-        work = []
+        tile_records = []
+        source_tiles = []
 
         for _y, _h, row in grid.tiles:
             for tiledata in row:
-                work.append(tiledata[2])
+                tile_records.append(tiledata)
+                source_tiles.append(tiledata[2])
 
-        batch_count = math.ceil(len(work) / batch_size)
+        batch_count = math.ceil(len(source_tiles) / batch_size)
         state.job_count = batch_count * upscale_count
 
-        print(f"SD upscaling will process a total of {len(work)} images tiled as {len(grid.tiles[0][2])}x{len(grid.tiles)} per upscale in a total of {state.job_count} batches.")
+        print(f"SD upscaling will process a total of {len(source_tiles)} images tiled as {len(grid.tiles[0][2])}x{len(grid.tiles)} per upscale in a total of {state.job_count} batches.")
 
         result_images = []
+        result_infos = []
+        result_seeds = []
+
         for n in range(upscale_count):
             start_seed = seed + n
             p.seed = start_seed
+            iteration_info = None
+            iteration_complete = True
 
-            work_results = []
             for i in range(batch_count):
-                p.batch_size = batch_size
-                p.init_images = work[i * batch_size:(i + 1) * batch_size]
+                if state.interrupted or state.stopping_generation:
+                    iteration_complete = False
+                    break
+
+                batch_start = i * batch_size
+                batch_end = min(batch_start + batch_size, len(source_tiles))
+                current_batch = source_tiles[batch_start:batch_end]
+
+                # Use the actual number of inputs in this slice. This is normally
+                # one for SD Upscale, and avoids duplicating a short final slice.
+                p.batch_size = len(current_batch)
+                p.init_images = current_batch
 
                 state.job = f"Batch {i + 1 + n * batch_count} out of {state.job_count}"
-                processed = processing.process_images(p)
+                batch_processed = processing.process_images(p)
 
-                if initial_info is None:
-                    initial_info = processed.info
+                if iteration_info is None:
+                    iteration_info = batch_processed.info
 
-                p.seed = processed.seed + 1
-                work_results += processed.images
+                if state.interrupted or state.stopping_generation:
+                    iteration_complete = False
+                    break
 
-            image_index = 0
-            for _y, _h, row in grid.tiles:
-                for tiledata in row:
-                    tiledata[2] = work_results[image_index] if image_index < len(work_results) else Image.new("RGB", (p.width, p.height))
-                    image_index += 1
+                expected_results = len(current_batch)
+                batch_results = batch_processed.images[:expected_results]
+                if len(batch_results) != expected_results:
+                    iteration_complete = False
+                    break
+
+                p.seed = batch_processed.seed + expected_results
+
+                # Put completed tiles directly into the output grid. On the last
+                # iteration, also release each original crop after its final use.
+                for offset, result in enumerate(batch_results):
+                    tile_index = batch_start + offset
+                    tile_records[tile_index][2] = result
+                    if n == upscale_count - 1:
+                        source_tiles[tile_index] = None
+
+                del batch_processed
+
+            if not iteration_complete:
+                break
 
             combined_image = images.combine_grid(grid)
             result_images.append(combined_image)
+            result_infos.append(iteration_info)
+            result_seeds.append(start_seed)
 
             if opts.samples_save:
-                images.save_image(combined_image, p.outpath_samples, "", start_seed, p.prompt, opts.samples_format, info=initial_info, p=p)
+                images.save_image(combined_image, p.outpath_samples, "", start_seed, p.prompt, opts.samples_format, info=iteration_info, p=p)
 
-        processed = Processed(p, result_images, seed, initial_info)
+        initial_info = result_infos[0] if result_infos else None
+        processed = Processed(
+            p,
+            result_images,
+            seed,
+            initial_info,
+            all_seeds=result_seeds or [seed],
+            infotexts=result_infos or None,
+        )
 
         return processed

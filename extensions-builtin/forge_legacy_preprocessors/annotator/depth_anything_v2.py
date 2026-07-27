@@ -14,8 +14,8 @@ from .annotator_path import models_path
 transform = Compose(
     [
         Resize(
-            width=518,
-            height=518,
+            width=826,
+            height=826,
             resize_target=False,
             keep_aspect_ratio=True,
             ensure_multiple_of=14,

@@ -12,6 +12,10 @@ def imports():
     logging.getLogger("xformers").addFilter(lambda record: 'A matching Triton is not available' not in record.getMessage())
 
     import torch  # noqa: F401
+    torch.backends.cudnn.enabled = False
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_math_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
     startup_timer.record("import torch")
     import pytorch_lightning  # noqa: F401
     startup_timer.record("import torch")

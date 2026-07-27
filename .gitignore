@@ -55,3 +55,8 @@ trace.json
 /test/results.xml
 coverage.xml
 **/tests/**/expectations
+
+# Local AMD/ZLUDA runtime and backups
+.zluda/
+Backup/
+modules/images - ORIGINAL.py
