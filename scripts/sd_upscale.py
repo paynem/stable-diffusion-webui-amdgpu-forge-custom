@@ -144,5 +144,5 @@ class Script(scripts.Script):
             all_seeds=result_seeds or [seed],
             infotexts=result_infos or None,
         )
-
+        p.n_iter = upscale_count
         return processed
